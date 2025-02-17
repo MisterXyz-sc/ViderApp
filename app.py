@@ -263,5 +263,5 @@ socketio.start_background_task(remove_inactive_users)
 
 if __name__ == '__main__':
     if not os.path.exists(DATABASE):
-        init_db()
+        init_db()  # Panggil fungsi inisialisasi database sebelum aplikasi berjalan
     socketio.run(app, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
