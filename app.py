@@ -9,7 +9,7 @@ app = Flask(__name__)
 app.secret_key = '01001011 01100101 01111001'
 
 # Konfigurasi Database
-DATABASE = 'database.db'
+DATABASE = os.path.join(os.getcwd(), 'database.db')
 
 # Inisialisasi SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*")
