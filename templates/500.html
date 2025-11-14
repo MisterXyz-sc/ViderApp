@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kesalahan Server - StreamFlix</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+        }
+
+        .error-container {
+            background: white;
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .error-code {
+            font-size: 8rem;
+            font-weight: bold;
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem;
+        }
+
+        .error-title {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            color: #2d3748;
+        }
+
+        .error-message {
+            font-size: 1.1rem;
+            color: #718096;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .technical-info {
+            background: #f7fafc;
+            padding: 1rem;
+            border-radius: 10px;
+            margin: 1.5rem 0;
+            border-left: 4px solid #e53e3e;
+        }
+
+        .technical-info h3 {
+            color: #e53e3e;
+            margin-bottom: 0.5rem;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
+        .animation {
+            margin-bottom: 2rem;
+        }
+
+        .tools {
+            animation: shake 2s ease-in-out infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: rotate(0deg); }
+            25% { transform: rotate(10deg); }
+            75% { transform: rotate(-10deg); }
+        }
+
+        .contact-info {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .contact-info p {
+            color: #718096;
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .error-container {
+                padding: 2rem;
+            }
+            
+            .error-code {
+                font-size: 6rem;
+            }
+            
+            .error-title {
+                font-size: 1.5rem;
+            }
+            
+            .btn-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="animation">
+            <div class="tools">🔧</div>
+        </div>
+        
+        <div class="error-code">500</div>
+        
+        <h1 class="error-title">Kesalahan Server Internal</h1>
+        
+        <p class="error-message">
+            Maaf, terjadi kesalahan pada server kami. 
+            Tim teknis telah diberitahu dan sedang memperbaiki masalah ini.
+        </p>
+
+        <div class="technical-info">
+            <h3>🛠️ Apa yang bisa Anda lakukan?</h3>
+            <p>• Refresh halaman setelah beberapa menit<br>
+               • Coba kembali nanti<br>
+               • Hubungi support jika masalah berlanjut</p>
+        </div>
+        
+        <div class="btn-group">
+            <a href="{{ url_for('index') }}" class="btn btn-primary">
+                🏠 Kembali ke Home
+            </a>
+            <button onclick="location.reload()" class="btn btn-secondary">
+                🔄 Refresh Halaman
+            </button>
+        </div>
+
+        <div class="contact-info">
+            <p>Butuh bantuan? <a href="mailto:support@streamflix.com" style="color: #667eea;">Hubungi Support</a></p>
+        </div>
+    </div>
+
+    <script>
+        // Auto refresh setelah 30 detik
+        setTimeout(function() {
+            const refreshBtn = document.querySelector('.btn-secondary');
+            if (refreshBtn) {
+                refreshBtn.style.background = 'linear-gradient(135deg, #48bb78, #38a169)';
+                refreshBtn.innerHTML = '🔄 Auto Refresh (5s)';
+                
+                setTimeout(function() {
+                    location.reload();
+                }, 5000);
+            }
+        }, 30000);
+
+        // Efek interaktif pada icon tools
+        document.addEventListener('DOMContentLoaded', function() {
+            const tools = document.querySelector('.tools');
+            
+            tools.addEventListener('click', function() {
+                this.style.animation = 'none';
+                setTimeout(() => {
+                    this.style.animation = 'shake 2s ease-in-out infinite';
+                }, 10);
+            });
+        });
+    </script>
+</body>
+          </html>
