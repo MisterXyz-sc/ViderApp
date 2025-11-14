@@ -569,7 +569,6 @@ def bulk_action():
     import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -578,44 +577,29 @@ import cloudinary
 import cloudinary.uploader
 import uuid
 
-# Load .env
-load_dotenv()
-
 # Flask init
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', 'change-me-please')
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', 'dev-secret-key-123456')
 
-# Database configuration for Vercel
-if os.environ.get('VERCEL'):
-    # Use PostgreSQL on Vercel
-    database_url = os.getenv('DATABASE_URL')
-    if database_url and database_url.startswith('postgres://'):
-        database_url = database_url.replace('postgres://', 'postgresql://', 1)
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:////tmp/app.db'
-else:
-    # Use local database
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db')
-
+# Gunakan SQLite untuk Vercel - lebih reliable
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///streamflix.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_recycle': 300,
-    'pool_pre_ping': True
-}
 
-# Cloudinary config (from env)
-cloudinary.config(
-    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
-    api_key=os.getenv('CLOUDINARY_API_KEY'),
-    api_secret=os.getenv('CLOUDINARY_API_SECRET'),
-    secure=True
-)
-
-# DB init
+# Initialize extensions
 db = SQLAlchemy(app)
-
-# Login manager
 login_manager = LoginManager(app)
-login_manager.login_view = 'payment_gateway'
+login_manager.login_view = 'admin_login'
+
+# Cloudinary config dengan error handling
+try:
+    cloudinary.config(
+        cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+        api_key=os.getenv('CLOUDINARY_API_KEY'),
+        api_secret=os.getenv('CLOUDINARY_API_SECRET'),
+        secure=True
+    )
+except:
+    print("Cloudinary config skipped")
 
 # Helper function untuk UTC time
 def utc_now():
@@ -623,45 +607,41 @@ def utc_now():
 
 # Models
 class User(UserMixin, db.Model):
-    __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(150), unique=True, nullable=False)
-    password = db.Column(db.String(200), nullable=False)
+    email = db.Column(db.String(150), unique=True)
+    password = db.Column(db.String(200))
     role = db.Column(db.String(20), default='admin')
     created_at = db.Column(db.DateTime, default=utc_now)
 
 class Video(db.Model):
-    __tablename__ = 'video'
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(255), nullable=False)
-    description = db.Column(db.Text, nullable=True)
-    url = db.Column(db.String(1024), nullable=False)
-    public_id = db.Column(db.String(1024), nullable=True)
+    title = db.Column(db.String(255))
+    description = db.Column(db.Text)
+    url = db.Column(db.String(1024))
+    public_id = db.Column(db.String(1024))
     created_at = db.Column(db.DateTime, default=utc_now)
 
 class PaymentProof(db.Model):
-    __tablename__ = 'payment_proof'
     id = db.Column(db.Integer, primary_key=True)
-    user_name = db.Column(db.String(100), nullable=False)
-    user_email = db.Column(db.String(120), nullable=False)
-    user_phone = db.Column(db.String(20), nullable=False)
-    payment_method = db.Column(db.String(50), nullable=False)
-    payment_amount = db.Column(db.Integer, nullable=False)
-    proof_image = db.Column(db.String(500), nullable=False)
+    user_name = db.Column(db.String(100))
+    user_email = db.Column(db.String(120))
+    user_phone = db.Column(db.String(20))
+    payment_method = db.Column(db.String(50))
+    payment_amount = db.Column(db.Integer)
+    proof_image = db.Column(db.String(500))
     status = db.Column(db.String(20), default='pending')
-    access_code = db.Column(db.String(10), unique=True)
+    access_code = db.Column(db.String(10))
     device_id = db.Column(db.String(200))
     expires_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=utc_now)
     approved_at = db.Column(db.DateTime)
 
 class AccessCode(db.Model):
-    __tablename__ = 'access_code'
     id = db.Column(db.Integer, primary_key=True)
-    code = db.Column(db.String(10), unique=True, nullable=False)
+    code = db.Column(db.String(10), unique=True)
     is_used = db.Column(db.Boolean, default=False)
     device_id = db.Column(db.String(200))
-    expires_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=utc_now)
     used_at = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
@@ -688,18 +668,13 @@ def cleanup_expired_codes():
         
         if expired_codes:
             db.session.commit()
-            print(f"Cleaned up {len(expired_codes)} expired access codes")
     except Exception as e:
-        print(f"Error cleaning up expired codes: {e}")
-        db.session.rollback()
+        print(f"Error cleaning expired codes: {e}")
 
 def check_access_code():
     """Check if current device has valid access code"""
     try:
         device_id = get_device_id()
-        
-        # Clean up expired codes first
-        cleanup_expired_codes()
         
         # Check for valid access code
         access_code_obj = AccessCode.query.filter_by(
@@ -722,34 +697,41 @@ def utility_processor():
 @login_manager.user_loader
 def load_user(user_id):
     try:
-        return db.session.get(User, int(user_id))
+        return User.query.get(int(user_id))
     except:
         return None
 
 # Initialize database
-def init_db():
+with app.app_context():
     try:
-        with app.app_context():
-            db.create_all()
-            cleanup_expired_codes()
-            admin_email = os.getenv('ADMIN_EMAIL')
-            admin_password = os.getenv('ADMIN_PASSWORD')
-            if admin_email and admin_password:
-                admin = User.query.filter_by(email=admin_email).first()
-                if not admin:
-                    admin = User(
-                        email=admin_email, 
-                        password=generate_password_hash(admin_password), 
-                        role='admin'
-                    )
-                    db.session.add(admin)
-                    db.session.commit()
-                    print('=> Admin created:', admin_email)
+        db.create_all()
+        cleanup_expired_codes()
+        
+        # Create default admin user jika belum ada
+        admin_email = os.getenv('ADMIN_EMAIL')
+        admin_password = os.getenv('ADMIN_PASSWORD')
+        if admin_email and admin_password:
+            admin = User.query.filter_by(email=admin_email).first()
+            if not admin:
+                admin = User(
+                    email=admin_email, 
+                    password=generate_password_hash(admin_password), 
+                    role='admin'
+                )
+                db.session.add(admin)
+                db.session.commit()
+                print('Admin user created')
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        print(f'Database init error: {e}')
 
-# Initialize on startup
-init_db()
+# Error handlers
+@app.errorhandler(500)
+def internal_error(error):
+    return render_template('500.html'), 500
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
 
 # Routes --------------------------------------------------------------------
 
@@ -758,17 +740,17 @@ def require_payment():
     """Check if user needs to go through payment gateway"""
     try:
         if request.endpoint and request.endpoint not in [
-            'payment_gateway', 'submit_payment', 'static', 'access_code', 
-            'verify_access_code', 'admin_login', 'logout', 'demo', 'favicon'
+            'payment_gateway', 'static', 'access_code', 
+            'admin_login', 'logout', 'demo', 'index', 'health'
         ]:
             if not check_access_code() and not current_user.is_authenticated:
                 return redirect(url_for('demo'))
     except Exception as e:
         print(f"Error in require_payment: {e}")
-        return redirect(url_for('demo'))
 
 @app.route('/')
 def index():
+    """Home page"""
     try:
         if not check_access_code() and not current_user.is_authenticated:
             return redirect(url_for('demo'))
@@ -776,7 +758,7 @@ def index():
         videos = Video.query.order_by(Video.created_at.desc()).all()
         return render_template('index.html', videos=videos)
     except Exception as e:
-        print(f"Error in index route: {e}")
+        flash('Error loading videos', 'danger')
         return render_template('index.html', videos=[])
 
 @app.route('/demo')
@@ -786,17 +768,17 @@ def demo():
         videos = Video.query.order_by(Video.created_at.desc()).all()
         return render_template('demo.html', videos=videos)
     except Exception as e:
-        print(f"Error in demo route: {e}")
+        flash('Error loading demo videos', 'danger')
         return render_template('demo.html', videos=[])
 
 # Payment Gateway
 @app.route('/payment', methods=['GET', 'POST'])
 def payment_gateway():
-    if check_access_code():
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        try:
+    try:
+        if check_access_code():
+            return redirect(url_for('index'))
+        
+        if request.method == 'POST':
             user_name = request.form.get('name', '').strip()
             user_email = request.form.get('email', '').strip()
             user_phone = request.form.get('phone', '').strip()
@@ -828,23 +810,23 @@ def payment_gateway():
             
             flash('Bukti pembayaran berhasil dikirim! Admin akan memverifikasi dalam 1x24 jam.', 'success')
             return redirect(url_for('payment_gateway'))
-            
-        except Exception as e:
-            db.session.rollback()
-            flash('Gagal mengupload bukti pembayaran: ' + str(e), 'danger')
-    
-    return render_template('payment.html')
+        
+        return render_template('payment.html')
+        
+    except Exception as e:
+        flash('Gagal mengupload bukti pembayaran: ' + str(e), 'danger')
+        return render_template('payment.html')
 
 # Access Code Entry
 @app.route('/access-code', methods=['GET', 'POST'])
 def access_code():
-    if check_access_code():
-        return redirect(url_for('index'))
-    
-    cleanup_expired_codes()
-    
-    if request.method == 'POST':
-        try:
+    try:
+        if check_access_code():
+            return redirect(url_for('index'))
+        
+        cleanup_expired_codes()
+        
+        if request.method == 'POST':
             code = request.form.get('code', '').strip().upper().replace('-', '').replace(' ', '')
             
             if not code or len(code) != 8:
@@ -879,11 +861,11 @@ def access_code():
             flash('Akses berhasil! Selamat menikmati StreamFlix.', 'success')
             return redirect(url_for('index'))
         
-        except Exception as e:
-            db.session.rollback()
-            flash('Terjadi kesalahan: ' + str(e), 'danger')
+        return render_template('access_code.html')
     
-    return render_template('access_code.html')
+    except Exception as e:
+        flash('Error processing access code: ' + str(e), 'danger')
+        return render_template('access_code.html')
 
 # Admin Routes
 @app.route('/admin', methods=['GET', 'POST'])
@@ -895,28 +877,37 @@ def admin_login():
         try:
             email = request.form.get('email', '').strip()
             password = request.form.get('password', '')
+            
+            if not email or not password:
+                flash('Email dan password harus diisi', 'danger')
+                return render_template('login.html')
+            
             user = User.query.filter_by(email=email).first()
+            
             if user and check_password_hash(user.password, password) and user.role == 'admin':
                 login_user(user)
                 flash('Login berhasil', 'success')
                 return redirect(url_for('admin_dashboard'))
-            flash('Email atau password salah', 'danger')
+            else:
+                flash('Email atau password salah', 'danger')
+                
         except Exception as e:
-            flash('Terjadi kesalahan saat login: ' + str(e), 'danger')
+            flash('Terjadi error saat login. Silakan coba lagi.', 'danger')
+    
     return render_template('login.html')
 
 @app.route('/admin/dashboard')
 @login_required
 def admin_dashboard():
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         pending_payments = PaymentProof.query.filter_by(status='pending').order_by(PaymentProof.created_at.desc()).all()
         videos = Video.query.order_by(Video.created_at.desc()).all()
         
-        # Get all access codes with pagination
+        # Get all access codes
         page = request.args.get('page', 1, type=int)
         per_page = 10
         
@@ -960,7 +951,6 @@ def admin_dashboard():
         used_codes = AccessCode.query.filter_by(is_used=True).count()
         expired_codes = AccessCode.query.filter(AccessCode.expires_at <= utc_now()).count()
         
-        # Get current time for template comparison - convert to naive datetime for template compatibility
         current_time = utc_now().replace(tzinfo=None)
         
         return render_template('admin.html', 
@@ -974,18 +964,26 @@ def admin_dashboard():
                              status_filter=status_filter,
                              search_query=search_query,
                              current_time=current_time)
+    
     except Exception as e:
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
-        return render_template('admin.html', videos=[], pending_payments=[], access_codes=None)
+        flash('Error loading dashboard', 'danger')
+        return render_template('admin.html', 
+                             videos=[], 
+                             pending_payments=[],
+                             access_codes=None,
+                             total_codes=0,
+                             active_codes=0,
+                             used_codes=0,
+                             expired_codes=0)
 
 @app.route('/admin/approve-payment/<int:payment_id>', methods=['POST'])
 @login_required
 def approve_payment(payment_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         payment = PaymentProof.query.get_or_404(payment_id)
         
         if payment.status != 'pending':
@@ -1016,19 +1014,19 @@ def approve_payment(payment_id):
         
         flash(f'Pembayaran disetujui! Kode akses: {code}', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error approving payment: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/reject-payment/<int:payment_id>', methods=['POST'])
 @login_required
 def reject_payment(payment_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         payment = PaymentProof.query.get_or_404(payment_id)
         
         if payment.status != 'pending':
@@ -1040,20 +1038,20 @@ def reject_payment(payment_id):
         
         flash('Pembayaran ditolak', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error rejecting payment: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 # Fitur Manajemen Kode Akses
 @app.route('/admin/generate-code', methods=['POST'])
 @login_required
 def generate_manual_code():
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         days_valid = int(request.form.get('days', 30))
         notes = request.form.get('notes', '').strip()
         
@@ -1077,57 +1075,57 @@ def generate_manual_code():
         
         flash(f'Kode akses berhasil dibuat: {code} (Berlaku {days_valid} hari)', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error generating access code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/deactivate-code/<int:code_id>', methods=['POST'])
 @login_required
 def deactivate_code(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code = AccessCode.query.get_or_404(code_id)
         code.is_active = False
         db.session.commit()
         
         flash(f'Kode {code.code} berhasil dinonaktifkan', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error deactivating code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/activate-code/<int:code_id>', methods=['POST'])
 @login_required
 def activate_code(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code = AccessCode.query.get_or_404(code_id)
         code.is_active = True
         db.session.commit()
         
         flash(f'Kode {code.code} berhasil diaktifkan', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error activating code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/delete-code/<int:code_id>', methods=['POST'])
 @login_required
 def delete_code(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code = AccessCode.query.get_or_404(code_id)
         code_value = code.code
         db.session.delete(code)
@@ -1135,19 +1133,19 @@ def delete_code(code_id):
         
         flash(f'Kode {code_value} berhasil dihapus', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error deleting code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/extend-code/<int:code_id>', methods=['POST'])
 @login_required
 def extend_code(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         additional_days = int(request.form.get('days', 30))
         code = AccessCode.query.get_or_404(code_id)
         
@@ -1160,19 +1158,19 @@ def extend_code(code_id):
         
         flash(f'Kode {code.code} diperpanjang {additional_days} hari', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error extending code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/reset-code/<int:code_id>', methods=['POST'])
 @login_required
 def reset_code(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code = AccessCode.query.get_or_404(code_id)
         code.is_used = False
         code.device_id = None
@@ -1181,19 +1179,19 @@ def reset_code(code_id):
         
         flash(f'Kode {code.code} berhasil direset dan dapat digunakan kembali', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error resetting code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/update-code-notes/<int:code_id>', methods=['POST'])
 @login_required
 def update_code_notes(code_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         notes = request.form.get('notes', '').strip()
         code = AccessCode.query.get_or_404(code_id)
         code.notes = notes
@@ -1201,19 +1199,19 @@ def update_code_notes(code_id):
         
         flash(f'Catatan untuk kode {code.code} berhasil diperbarui', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error updating code notes: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/bulk-delete-codes', methods=['POST'])
 @login_required
 def bulk_delete_codes():
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code_ids = request.form.getlist('code_ids')
         if not code_ids:
             flash('Tidak ada kode yang dipilih', 'warning')
@@ -1230,19 +1228,19 @@ def bulk_delete_codes():
         
         flash(f'Berhasil menghapus {deleted_count} kode akses', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error deleting codes: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/bulk-action', methods=['POST'])
 @login_required
 def bulk_action():
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-    
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+        
         code_ids = request.form.getlist('code_ids')
         action = request.form.get('bulk_action')
         
@@ -1273,20 +1271,20 @@ def bulk_action():
         db.session.commit()
         flash(f'Berhasil {action} {updated_count} kode akses', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error performing bulk action: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 # Upload handler
 @app.route('/admin/upload', methods=['POST'])
 @login_required
 def admin_upload():
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+
         file = request.files.get('video')
         title = request.form.get('title', 'Untitled').strip()
         description = request.form.get('description', '').strip()
@@ -1310,17 +1308,17 @@ def admin_upload():
 
         flash('Upload berhasil', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Gagal upload: ' + str(e), 'danger')
+        flash('Gagal upload video: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 @app.route('/search')
 def search_videos():
-    if not check_access_code() and not current_user.is_authenticated:
-        return redirect(url_for('demo'))
-    
     try:
+        if not check_access_code() and not current_user.is_authenticated:
+            return redirect(url_for('demo'))
+        
         query = request.args.get('q', '').strip()
         videos = []
         
@@ -1333,16 +1331,17 @@ def search_videos():
             ).order_by(Video.created_at.desc()).all()
         
         return render_template('search.html', videos=videos, query=query, search_count=len(videos))
+    
     except Exception as e:
-        print(f"Error in search route: {e}")
-        return render_template('search.html', videos=[], query=query, search_count=0)
+        flash('Error searching videos', 'danger')
+        return render_template('search.html', videos=[], query='', search_count=0)
 
 @app.route('/api/search')
 def api_search():
-    if not check_access_code() and not current_user.is_authenticated:
-        return {'videos': []}
-    
     try:
+        if not check_access_code() and not current_user.is_authenticated:
+            return {'videos': []}
+        
         query = request.args.get('q', '').strip()
         limit = request.args.get('limit', 10, type=int)
         
@@ -1366,19 +1365,19 @@ def api_search():
             return {'videos': results}
         
         return {'videos': []}
+    
     except Exception as e:
-        print(f"Error in API search: {e}")
         return {'videos': []}
 
 # Delete video
 @app.route('/admin/delete/<int:video_id>', methods=['POST'])
 @login_required
 def admin_delete(video_id):
-    if current_user.role != 'admin':
-        flash('Akses ditolak', 'danger')
-        return redirect(url_for('index'))
-
     try:
+        if current_user.role != 'admin':
+            flash('Akses ditolak', 'danger')
+            return redirect(url_for('index'))
+
         v = Video.query.get_or_404(video_id)
         try:
             if v.public_id:
@@ -1390,34 +1389,27 @@ def admin_delete(video_id):
         db.session.commit()
         flash('Video dihapus', 'success')
         return redirect(url_for('admin_dashboard'))
+    
     except Exception as e:
-        db.session.rollback()
-        flash('Terjadi kesalahan: ' + str(e), 'danger')
+        flash('Error deleting video: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
 # Logout
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user()
-    flash('Logout berhasil', 'info')
-    return redirect(url_for('index'))
+    try:
+        logout_user()
+        flash('Logout berhasil', 'info')
+        return redirect(url_for('index'))
+    except Exception as e:
+        return redirect(url_for('index'))
+
+# Health check route untuk Vercel
+@app.route('/health')
+def health_check():
+    return jsonify({'status': 'healthy', 'timestamp': utc_now().isoformat()})
 
 # Vercel compatibility
-@app.route('/favicon.ico')
-def favicon():
-    return '', 404
-
-# Error handlers
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    db.session.rollback()
-    return render_template('500.html'), 500
-
-# Run (untuk development saja)
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
