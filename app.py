@@ -568,7 +568,8 @@ def bulk_action():
     
     import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import pytz
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -579,76 +580,86 @@ import uuid
 
 # Flask init
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', 'dev-secret-key-123456')
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', 'dev-secret-key-change-in-production-123')
 
-# Gunakan SQLite untuk Vercel - lebih reliable
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///streamflix.db'
+# Database configuration for Render
+database_url = os.getenv('DATABASE_URL')
+if database_url and database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_recycle': 300,
+    'pool_pre_ping': True
+}
 
 # Initialize extensions
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'admin_login'
+login_manager.login_message_category = 'info'
 
-# Cloudinary config dengan error handling
-try:
-    cloudinary.config(
-        cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
-        api_key=os.getenv('CLOUDINARY_API_KEY'),
-        api_secret=os.getenv('CLOUDINARY_API_SECRET'),
-        secure=True
-    )
-except:
-    print("Cloudinary config skipped")
+# Cloudinary config
+cloudinary.config(
+    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.getenv('CLOUDINARY_API_KEY'),
+    api_secret=os.getenv('CLOUDINARY_API_SECRET'),
+    secure=True
+)
 
-# Helper function untuk UTC time
+# Helper functions
+def get_indonesia_time():
+    tz = pytz.timezone('Asia/Jakarta')
+    return datetime.now(tz)
+
 def utc_now():
-    return datetime.now(timezone.utc)
+    return datetime.utcnow()
+
+def generate_access_code():
+    return secrets.token_hex(4).upper()
 
 # Models
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(150), unique=True)
-    password = db.Column(db.String(200))
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), default='admin')
-    created_at = db.Column(db.DateTime, default=utc_now)
+    created_at = db.Column(db.DateTime, default=get_indonesia_time)
 
 class Video(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(255))
-    description = db.Column(db.Text)
-    url = db.Column(db.String(1024))
-    public_id = db.Column(db.String(1024))
-    created_at = db.Column(db.DateTime, default=utc_now)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    url = db.Column(db.String(1024), nullable=False)
+    public_id = db.Column(db.String(512), nullable=True)
+    created_at = db.Column(db.DateTime, default=get_indonesia_time)
 
 class PaymentProof(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_name = db.Column(db.String(100))
-    user_email = db.Column(db.String(120))
-    user_phone = db.Column(db.String(20))
-    payment_method = db.Column(db.String(50))
-    payment_amount = db.Column(db.Integer)
-    proof_image = db.Column(db.String(500))
+    user_name = db.Column(db.String(100), nullable=False)
+    user_email = db.Column(db.String(120), nullable=False)
+    user_phone = db.Column(db.String(20), nullable=False)
+    payment_method = db.Column(db.String(50), nullable=False)
+    payment_amount = db.Column(db.Integer, nullable=False)
+    proof_image = db.Column(db.String(500), nullable=False)
     status = db.Column(db.String(20), default='pending')
-    access_code = db.Column(db.String(10))
+    access_code = db.Column(db.String(10), unique=True)
     device_id = db.Column(db.String(200))
     expires_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=utc_now)
+    created_at = db.Column(db.DateTime, default=get_indonesia_time)
     approved_at = db.Column(db.DateTime)
 
 class AccessCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    code = db.Column(db.String(10), unique=True)
+    code = db.Column(db.String(10), unique=True, nullable=False)
     is_used = db.Column(db.Boolean, default=False)
     device_id = db.Column(db.String(200))
-    expires_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=utc_now)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    created_at = db.Column(db.DateTime, default=get_indonesia_time)
     used_at = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.String(200))
-
-def generate_access_code():
-    return secrets.token_hex(4).upper()
 
 def get_device_id():
     """Generate unique device ID"""
@@ -668,13 +679,18 @@ def cleanup_expired_codes():
         
         if expired_codes:
             db.session.commit()
+            print(f"Cleaned up {len(expired_codes)} expired access codes")
     except Exception as e:
-        print(f"Error cleaning expired codes: {e}")
+        print(f"Error cleaning up expired codes: {e}")
+        db.session.rollback()
 
 def check_access_code():
     """Check if current device has valid access code"""
     try:
         device_id = get_device_id()
+        
+        # Clean up expired codes first
+        cleanup_expired_codes()
         
         # Check for valid access code
         access_code_obj = AccessCode.query.filter_by(
@@ -702,27 +718,35 @@ def load_user(user_id):
         return None
 
 # Initialize database
-with app.app_context():
-    try:
-        db.create_all()
-        cleanup_expired_codes()
-        
-        # Create default admin user jika belum ada
-        admin_email = os.getenv('ADMIN_EMAIL')
-        admin_password = os.getenv('ADMIN_PASSWORD')
-        if admin_email and admin_password:
-            admin = User.query.filter_by(email=admin_email).first()
-            if not admin:
-                admin = User(
-                    email=admin_email, 
-                    password=generate_password_hash(admin_password), 
-                    role='admin'
-                )
-                db.session.add(admin)
-                db.session.commit()
-                print('Admin user created')
-    except Exception as e:
-        print(f'Database init error: {e}')
+def init_db():
+    with app.app_context():
+        try:
+            db.create_all()
+            cleanup_expired_codes()
+            
+            # Create default admin user jika belum ada
+            admin_email = os.getenv('ADMIN_EMAIL')
+            admin_password = os.getenv('ADMIN_PASSWORD')
+            if admin_email and admin_password:
+                admin = User.query.filter_by(email=admin_email).first()
+                if not admin:
+                    admin = User(
+                        email=admin_email, 
+                        password=generate_password_hash(admin_password), 
+                        role='admin'
+                    )
+                    db.session.add(admin)
+                    db.session.commit()
+                    print('Admin user created')
+                else:
+                    print('Admin user already exists')
+                    
+            print('Database initialized successfully')
+        except Exception as e:
+            print(f'Database initialization error: {e}')
+
+# Initialize the database
+init_db()
 
 # Error handlers
 @app.errorhandler(500)
@@ -814,6 +838,8 @@ def payment_gateway():
         return render_template('payment.html')
         
     except Exception as e:
+        print(f"Error in payment gateway: {e}")
+        db.session.rollback()
         flash('Gagal mengupload bukti pembayaran: ' + str(e), 'danger')
         return render_template('payment.html')
 
@@ -847,14 +873,14 @@ def access_code():
                 flash('Kode akses sudah digunakan', 'danger')
                 return render_template('access_code.html')
             
-            if access_code_obj.expires_at.replace(tzinfo=timezone.utc) < utc_now():
+            if access_code_obj.expires_at.replace(tzinfo=pytz.UTC) < datetime.now(pytz.UTC):
                 flash('Kode akses sudah kadaluarsa', 'danger')
                 return render_template('access_code.html')
             
             device_id = get_device_id()
             access_code_obj.is_used = True
             access_code_obj.device_id = device_id
-            access_code_obj.used_at = utc_now()
+            access_code_obj.used_at = get_indonesia_time()
             
             db.session.commit()
             
@@ -864,6 +890,8 @@ def access_code():
         return render_template('access_code.html')
     
     except Exception as e:
+        print(f"Error in access code route: {e}")
+        db.session.rollback()
         flash('Error processing access code: ' + str(e), 'danger')
         return render_template('access_code.html')
 
@@ -892,6 +920,7 @@ def admin_login():
                 flash('Email atau password salah', 'danger')
                 
         except Exception as e:
+            print(f"Login error: {e}")
             flash('Terjadi error saat login. Silakan coba lagi.', 'danger')
     
     return render_template('login.html')
@@ -907,7 +936,7 @@ def admin_dashboard():
         pending_payments = PaymentProof.query.filter_by(status='pending').order_by(PaymentProof.created_at.desc()).all()
         videos = Video.query.order_by(Video.created_at.desc()).all()
         
-        # Get all access codes
+        # Get all access codes with pagination
         page = request.args.get('page', 1, type=int)
         per_page = 10
         
@@ -951,7 +980,7 @@ def admin_dashboard():
         used_codes = AccessCode.query.filter_by(is_used=True).count()
         expired_codes = AccessCode.query.filter(AccessCode.expires_at <= utc_now()).count()
         
-        current_time = utc_now().replace(tzinfo=None)
+        current_time = get_indonesia_time()
         
         return render_template('admin.html', 
                              videos=videos, 
@@ -966,6 +995,7 @@ def admin_dashboard():
                              current_time=current_time)
     
     except Exception as e:
+        print(f"Admin dashboard error: {e}")
         flash('Error loading dashboard', 'danger')
         return render_template('admin.html', 
                              videos=[], 
@@ -997,7 +1027,7 @@ def approve_payment(payment_id):
             if not existing_code:
                 break
         
-        expires_at = utc_now() + timedelta(days=30)
+        expires_at = get_indonesia_time() + timedelta(days=30)
         
         access_code_obj = AccessCode(
             code=code,
@@ -1007,7 +1037,7 @@ def approve_payment(payment_id):
         
         payment.status = 'approved'
         payment.access_code = code
-        payment.approved_at = utc_now()
+        payment.approved_at = get_indonesia_time()
         
         db.session.add(access_code_obj)
         db.session.commit()
@@ -1016,6 +1046,8 @@ def approve_payment(payment_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error approving payment: {e}")
+        db.session.rollback()
         flash('Error approving payment: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1040,6 +1072,8 @@ def reject_payment(payment_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error rejecting payment: {e}")
+        db.session.rollback()
         flash('Error rejecting payment: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1062,7 +1096,7 @@ def generate_manual_code():
             if not existing_code:
                 break
         
-        expires_at = utc_now() + timedelta(days=days_valid)
+        expires_at = get_indonesia_time() + timedelta(days=days_valid)
         
         access_code_obj = AccessCode(
             code=code,
@@ -1077,6 +1111,8 @@ def generate_manual_code():
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error generating code: {e}")
+        db.session.rollback()
         flash('Error generating access code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1096,6 +1132,8 @@ def deactivate_code(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error deactivating code: {e}")
+        db.session.rollback()
         flash('Error deactivating code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1115,6 +1153,8 @@ def activate_code(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error activating code: {e}")
+        db.session.rollback()
         flash('Error activating code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1135,6 +1175,8 @@ def delete_code(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error deleting code: {e}")
+        db.session.rollback()
         flash('Error deleting code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1149,8 +1191,8 @@ def extend_code(code_id):
         additional_days = int(request.form.get('days', 30))
         code = AccessCode.query.get_or_404(code_id)
         
-        if code.expires_at.replace(tzinfo=timezone.utc) < utc_now():
-            code.expires_at = utc_now() + timedelta(days=additional_days)
+        if code.expires_at.replace(tzinfo=pytz.UTC) < datetime.now(pytz.UTC):
+            code.expires_at = get_indonesia_time() + timedelta(days=additional_days)
         else:
             code.expires_at += timedelta(days=additional_days)
         
@@ -1160,6 +1202,8 @@ def extend_code(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error extending code: {e}")
+        db.session.rollback()
         flash('Error extending code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1181,6 +1225,8 @@ def reset_code(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error resetting code: {e}")
+        db.session.rollback()
         flash('Error resetting code: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1201,6 +1247,8 @@ def update_code_notes(code_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error updating code notes: {e}")
+        db.session.rollback()
         flash('Error updating code notes: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1230,6 +1278,8 @@ def bulk_delete_codes():
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error in bulk delete: {e}")
+        db.session.rollback()
         flash('Error deleting codes: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1273,6 +1323,8 @@ def bulk_action():
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error in bulk action: {e}")
+        db.session.rollback()
         flash('Error performing bulk action: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1310,6 +1362,8 @@ def admin_upload():
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error uploading video: {e}")
+        db.session.rollback()
         flash('Gagal upload video: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1391,6 +1445,8 @@ def admin_delete(video_id):
         return redirect(url_for('admin_dashboard'))
     
     except Exception as e:
+        print(f"Error deleting video: {e}")
+        db.session.rollback()
         flash('Error deleting video: ' + str(e), 'danger')
         return redirect(url_for('admin_dashboard'))
 
@@ -1405,11 +1461,23 @@ def logout():
     except Exception as e:
         return redirect(url_for('index'))
 
-# Health check route untuk Vercel
+# Health check route untuk Render
 @app.route('/health')
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': utc_now().isoformat()})
+    return jsonify({
+        'status': 'healthy', 
+        'database': 'connected',
+        'timestamp': get_indonesia_time().isoformat()
+    })
 
-# Vercel compatibility
+# Serve static files
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return app.send_static_file(filename)
+
+@app.route('/style.css')
+def serve_css():
+    return app.send_static_file('style.css')
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
